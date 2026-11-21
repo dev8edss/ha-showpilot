@@ -15,12 +15,15 @@ Copy `custom_components/showpilot` into your Home Assistant `config/custom_compo
 - **Server address:** e.g. `http://192.168.1.20:3100`
 - **Show token (optional):** from ShowPilot admin → **Plugin** → **Show Token**. Without it you get the read-only entities. With it you also get the controls and FPP's connection status.
 
+**Visitor messages (optional):** ShowPilot only lets its admin login read messages, so to get them in Home Assistant open the integration's **Configure** and enter a ShowPilot user name and password. A separate ShowPilot user just for Home Assistant is best. Leave the user name empty to remove it.
+
 The token is the same one the FPP plugin uses. Anyone with it can control your show, so treat it like a password. If it changes, Home Assistant asks for the new one. **Reconfigure** on the integration changes the address or token in place.
 
 ## Entities
 
 | Entity | Token | What it shows / does |
 |---|---|---|
+| Media player | | Now playing as a media card: title, artist, cover art and a moving progress bar (read-only) |
 | Now playing | | Song name with cover art; artist, sequence, start time and length as attributes |
 | Next song | | What's scheduled next |
 | Song ends | | When the current song finishes |
@@ -37,13 +40,18 @@ The token is the same one the FPP plugin uses. Anyone with it can control your s
 | Clear queue | ✓ | Empties the request queue (played history is kept) |
 | FPP connected, FPP last seen | ✓ | Whether the FPP plugin's heartbeat is recent (within 90 s) |
 | Interrupt schedule | ✓ | ShowPilot's Interrupt Schedule setting |
+| Unread messages | login | Unread visitor messages; the newest one as attributes |
+| Live updates | | Whether ShowPilot's live feed is connected (diagnostic) |
 
-It polls every 5 seconds (FPP details every 30). Polling never takes a request away from FPP: it only uses the plugin API's read-only `peek` mode.
+**Live updates:** the integration listens to ShowPilot's live feed (the one the viewer page uses), so a request, song change or mode change shows up within a moment. While the feed is connected it also checks every 30 seconds; if the feed drops it checks every 5 seconds until it's back. It never takes a request away from FPP: it only uses the plugin API's read-only `peek` mode, and it never counts as a viewer.
 
 ## Events
 
 - `showpilot_song_requested`: someone requested a song. Data: `sequence`, `name`, `artist`, `position` (place in the queue), `playing_now` (true when it started straight away).
 - `showpilot_song_changed`: a new song started. Data: `sequence`, `name`, `artist`, `previous`, `requested` (true if it was a viewer request), `mode`.
+- `showpilot_visitor_message` (needs the login): a visitor sent a message. Data: `name` (if they gave one), `message`, `filtered` (the word filter masked something), `wants_on_wall`, `created`.
+
+The same are in the automation editor as device triggers: **When → Device → your show → Song requested / Song started / Requested song started / Visitor message received**.
 
 ```yaml
 automation:

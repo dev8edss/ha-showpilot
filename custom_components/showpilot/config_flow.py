@@ -7,17 +7,18 @@ from typing import Any
 
 import voluptuous as vol
 
-from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
+from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResult, OptionsFlow
+from homeassistant.core import callback
 from homeassistant.const import CONF_URL
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.aiohttp_client import async_create_clientsession, async_get_clientsession
 from homeassistant.helpers.selector import (
     TextSelector,
     TextSelectorConfig,
     TextSelectorType,
 )
 
-from .api import ShowPilotAuthError, ShowPilotClient, ShowPilotConnectionError, ShowPilotError
-from .const import CONF_TOKEN, DOMAIN
+from .api import ShowPilotAdmin, ShowPilotAuthError, ShowPilotClient, ShowPilotConnectionError, ShowPilotError
+from .const import CONF_PASSWORD, CONF_TOKEN, CONF_USERNAME, DOMAIN
 
 TOKEN_SELECTOR = TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD))
 
@@ -31,6 +32,11 @@ def _normalise(url: str) -> str:
 
 class ShowPilotConfigFlow(ConfigFlow, domain=DOMAIN):
     VERSION = 1
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(config_entry: ConfigEntry) -> OptionsFlow:
+        return ShowPilotOptionsFlow()
 
     async def _check(self, url: str, token: str | None) -> tuple[dict[str, str], str | None]:
         """Return (errors, show name)."""
@@ -116,5 +122,50 @@ class ShowPilotConfigFlow(ConfigFlow, domain=DOMAIN):
             step_id="reauth_confirm",
             data_schema=vol.Schema({vol.Optional(CONF_TOKEN): TOKEN_SELECTOR}),
             description_placeholders={"url": entry.data[CONF_URL]},
+            errors=errors,
+        )
+
+
+class ShowPilotOptionsFlow(OptionsFlow):
+    """Optional ShowPilot login, for visitor messages."""
+
+    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        errors: dict[str, str] = {}
+        current = self.config_entry.options
+        if user_input is not None:
+            username = (user_input.get(CONF_USERNAME) or "").strip()
+            password = user_input.get(CONF_PASSWORD) or ""
+            if not username:
+                return self.async_create_entry(data={})  # login removed
+            if not password and username == current.get(CONF_USERNAME):
+                password = current.get(CONF_PASSWORD, "")  # keep the saved password
+            if not password:
+                errors[CONF_PASSWORD] = "password_required"
+            else:
+                admin = ShowPilotAdmin(
+                    async_create_clientsession(self.hass),
+                    self.config_entry.data[CONF_URL], username, password,
+                )
+                try:
+                    await admin.messages(limit=1)
+                except ShowPilotAuthError:
+                    errors["base"] = "invalid_login"
+                except ShowPilotConnectionError:
+                    errors["base"] = "cannot_connect"
+                except ShowPilotError:
+                    errors["base"] = "login_failed"
+                else:
+                    return self.async_create_entry(data={CONF_USERNAME: username, CONF_PASSWORD: password})
+        return self.async_show_form(
+            step_id="init",
+            data_schema=self.add_suggested_values_to_schema(
+                vol.Schema(
+                    {
+                        vol.Optional(CONF_USERNAME): str,
+                        vol.Optional(CONF_PASSWORD): TOKEN_SELECTOR,
+                    }
+                ),
+                {CONF_USERNAME: current.get(CONF_USERNAME, "")},
+            ),
             errors=errors,
         )

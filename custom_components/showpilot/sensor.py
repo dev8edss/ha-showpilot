@@ -45,6 +45,7 @@ class ShowPilotSensorDescription(SensorEntityDescription):
     value_fn: Callable[[ShowPilotData], Any]
     needs_token: bool = False
     without_token_only: bool = False
+    needs_login: bool = False
 
 
 SENSORS: tuple[ShowPilotSensorDescription, ...] = (
@@ -121,6 +122,15 @@ SENSORS: tuple[ShowPilotSensorDescription, ...] = (
         value_fn=lambda d: MODES.get(d.state.get("viewerControlMode") or ""),
     ),
     ShowPilotSensorDescription(
+        key="unread_messages",
+        translation_key="unread_messages",
+        icon="mdi:message-text",
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement="messages",
+        needs_login=True,
+        value_fn=lambda d: d.unread_messages,
+    ),
+    ShowPilotSensorDescription(
         key="plugin_last_seen",
         translation_key="plugin_last_seen",
         device_class=SensorDeviceClass.TIMESTAMP,
@@ -136,10 +146,13 @@ async def async_setup_entry(
 ) -> None:
     coordinator = entry.runtime_data
     token = coordinator.client.has_token
+    login = coordinator.admin is not None
     async_add_entities(
         ShowPilotSensor(coordinator, desc)
         for desc in SENSORS
-        if (token or not desc.needs_token) and not (token and desc.without_token_only)
+        if (token or not desc.needs_token)
+        and not (token and desc.without_token_only)
+        and (login or not desc.needs_login)
     )
 
 
@@ -183,6 +196,12 @@ class ShowPilotSensor(ShowPilotEntity, SensorEntity):
             return {
                 "requests": [self.coordinator.label(q.get("sequence_name"))[0] for q in s.get("queue") or []]
             }
+        if key == "unread_messages":
+            m = self.coordinator.data.latest_message
+            if not m:
+                return None
+            return {"latest_name": m.get("name") or None, "latest_message": m.get("message"),
+                    "latest_at": m.get("created_at")}
         if key == "leading_vote":
             counts = sorted(s.get("voteCounts") or [], key=lambda c: -c.get("count", 0))
             return {

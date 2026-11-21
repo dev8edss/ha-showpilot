@@ -40,7 +40,19 @@ class FakeServer:
         self.pages = [{"name": "Main", "active": 1}, {"name": "Off season", "active": 0}]
         self.posts: list[tuple[str, Any]] = []
         self.down = False
+        self.admin_user = ("ha", "secret")
+        self.admin_session = "sess-1"
+        self.logins = 0
+        self.messages: list[dict[str, Any]] = [
+            {"id": 1, "created_at": "2026-11-20 10:00:00", "name": "Old", "message": "old one", "filtered": 0,
+             "is_read": 1, "allow_public": 0, "is_public": 0},
+        ]
         self.install()
+
+    def add_message(self, name: str | None, text: str, allow_public: bool = False) -> None:
+        mid = max(m["id"] for m in self.messages) + 1
+        self.messages.insert(0, {"id": mid, "created_at": "2026-11-21 11:00:00", "name": name, "message": text,
+                                 "filtered": 0, "is_read": 0, "allow_public": int(allow_public), "is_public": 0})
 
     def song(self, idx: int) -> dict[str, Any]:
         return self.state["sequences"][idx]
@@ -79,6 +91,18 @@ class FakeServer:
                 if srv.down:
                     raise ClientConnectionError("down")
                 hdrs = srv._last_headers
+                if path == "/api/admin/login":
+                    if (data or {}).get("username") != srv.admin_user[0] or data.get("password") != srv.admin_user[1]:
+                        return respond(m, url, {"error": "Invalid credentials"}, None, 401)
+                    srv.logins += 1
+                    return AiohttpClientMockResponse(m, url, json={"ok": True},
+                                                     cookies={"showpilot_session": srv.admin_session})
+                if path == "/api/admin/messages":
+                    if (hdrs or {}).get("Cookie") != f"showpilot_session={srv.admin_session}":
+                        return respond(m, url, {"error": "Not logged in"}, None, 401)
+                    unread = sum(1 for x in srv.messages if not x["is_read"])
+                    return respond(m, url, {"messages": copy.deepcopy(srv.messages), "total": len(srv.messages),
+                                            "unread": unread, "pending": 0}, None)
                 if path.startswith("/api/plugin") and not srv._auth(hdrs):
                     return respond(m, url, {"error": "Invalid or missing bearer token"}, None, 401)
                 if method == "POST":
@@ -114,6 +138,8 @@ class FakeServer:
         for path in ("/api/plugin/viewer-mode", "/api/plugin/queue/clear", "/api/plugin/category",
                      "/api/plugin/viewer-page"):
             self.mock.post(f"{URL}{path}", side_effect=make(path, "POST"))
+        self.mock.post(f"{URL}/api/admin/login", side_effect=make("/api/admin/login", "POST"))
+        self.mock.get(f"{URL}/api/admin/messages", side_effect=make("/api/admin/messages", "GET"))
 
     _last_headers: dict | None = None
 
@@ -130,3 +156,31 @@ def server(aioclient_mock) -> FakeServer:
 
     aioclient_mock.match_request = match_request
     return srv
+
+
+class FakeFeed:
+    """Stands in for the socket.io feed; tests drive its callbacks."""
+
+    instances: list["FakeFeed"] = []
+
+    def __init__(self, session, url, on_event, on_status) -> None:
+        self.url = url
+        self.on_event = on_event
+        self.on_status = on_status
+        self.stopped = False
+        FakeFeed.instances.append(self)
+
+    async def run(self) -> None:
+        return None
+
+    def stop(self) -> None:
+        self.stopped = True
+
+
+@pytest.fixture(autouse=True)
+def fake_feed():
+    from unittest.mock import patch
+
+    FakeFeed.instances = []
+    with patch("custom_components.showpilot.LiveFeed", FakeFeed):
+        yield FakeFeed

@@ -49,6 +49,13 @@ BINARY_SENSORS: tuple[ShowPilotBinaryDescription, ...] = (
         value_fn=lambda d: bool(d.state.get("requiresLocationCode")),
     ),
     ShowPilotBinaryDescription(
+        key="live_updates",
+        translation_key="live_updates",
+        device_class=BinarySensorDeviceClass.CONNECTIVITY,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda d: d.live,
+    ),
+    ShowPilotBinaryDescription(
         key="plugin_connected",
         translation_key="plugin_connected",
         device_class=BinarySensorDeviceClass.CONNECTIVITY,

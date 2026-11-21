@@ -5,23 +5,28 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 import logging
+import time
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.event import async_call_later
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
-from .api import ShowPilotAuthError, ShowPilotClient, ShowPilotError
+from .api import ShowPilotAdmin, ShowPilotAuthError, ShowPilotClient, ShowPilotError
 from .const import (
     DOMAIN,
     EVENT_SONG_CHANGED,
     EVENT_SONG_REQUESTED,
-    EXTRAS_EVERY,
+    EVENT_VISITOR_MESSAGE,
+    EXTRAS_SECONDS,
+    LIVE_SCAN_INTERVAL,
     PLUGIN_STALE_SECONDS,
     SCAN_INTERVAL,
 )
+from .live import EXTRAS_EVENTS
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -39,6 +44,9 @@ class ShowPilotData:
     peek: dict[str, Any] | None = None
     categories: list[dict[str, Any]] = field(default_factory=list)
     pages: list[dict[str, Any]] = field(default_factory=list)
+    unread_messages: int | None = None
+    latest_message: dict[str, Any] | None = None
+    live: bool = False
 
     @property
     def tonight(self) -> dict[str, Any]:
@@ -70,7 +78,12 @@ class ShowPilotCoordinator(DataUpdateCoordinator[ShowPilotData]):
             hass, _LOGGER, config_entry=entry, name=DOMAIN, update_interval=SCAN_INTERVAL
         )
         self.client = client
-        self._polls = 0
+        self.admin: ShowPilotAdmin | None = None
+        self._extras_at = 0.0
+        self._last_message_id: int | None = None
+        self._admin_warned = False
+        self.live = False
+        self._pending_refresh = None
         self._extras: dict[str, Any] = {}
         self._names: dict[str, tuple[str, str]] = {}  # sequence -> (display name, artist)
         self._seen_requests: set[tuple[str, str]] | None = None
@@ -80,7 +93,37 @@ class ShowPilotCoordinator(DataUpdateCoordinator[ShowPilotData]):
 
     def refresh_extras_soon(self) -> None:
         """Make the next poll re-read plugin details (after a control action)."""
-        self._polls = 0
+        self._extras_at = 0.0
+
+    @callback
+    def set_live(self, connected: bool) -> None:
+        """Poll slowly while ShowPilot pushes changes, quickly when it can't."""
+        self.live = connected
+        self.update_interval = LIVE_SCAN_INTERVAL if connected else SCAN_INTERVAL
+        if self.data is not None:
+            self.data.live = connected
+            self.async_update_listeners()
+
+    @callback
+    def live_event(self, name: str) -> None:
+        """Refresh shortly after a push; bursts of events become one refresh."""
+        if name in EXTRAS_EVENTS or name == "connect":
+            self._extras_at = 0.0
+        if self._pending_refresh is not None:
+            return
+
+        @callback
+        def _go(_now) -> None:
+            self._pending_refresh = None
+            self.hass.async_create_task(self.async_refresh(), eager_start=True)
+
+        self._pending_refresh = async_call_later(self.hass, 0.3, _go)
+
+    @callback
+    def cancel_pending(self) -> None:
+        if self._pending_refresh is not None:
+            self._pending_refresh()
+            self._pending_refresh = None
 
     def label(self, sequence: str | None) -> tuple[str | None, str]:
         if not sequence:
@@ -91,13 +134,13 @@ class ShowPilotCoordinator(DataUpdateCoordinator[ShowPilotData]):
         try:
             state = await self.client.state()
             stats = await self.client.page_stats()
-            if self._polls % EXTRAS_EVERY == 0:
+            if time.monotonic() - self._extras_at >= EXTRAS_SECONDS:
                 await self._read_extras()
+                self._extras_at = time.monotonic()
         except ShowPilotAuthError as err:
             raise ConfigEntryAuthFailed(str(err)) from err
         except ShowPilotError as err:
             raise UpdateFailed(str(err)) from err
-        self._polls += 1
 
         for seq in state.get("sequences") or []:
             name = seq.get("name")
@@ -107,7 +150,7 @@ class ShowPilotCoordinator(DataUpdateCoordinator[ShowPilotData]):
         if playing and state.get("nowPlayingDisplayName"):
             self._names[playing] = (state["nowPlayingDisplayName"], state.get("nowPlayingArtist") or "")
 
-        data = ShowPilotData(state=state, stats=stats, **self._extras)
+        data = ShowPilotData(state=state, stats=stats, live=self.live, **self._extras)
         self._fire_events(data)
         return data
 
@@ -122,7 +165,43 @@ class ShowPilotCoordinator(DataUpdateCoordinator[ShowPilotData]):
             extras["peek"] = await self.client.plugin_peek()
             extras["categories"] = await self.client.categories()
             extras["pages"] = await self.client.viewer_pages()
+        if self.admin is not None:
+            await self._read_messages(extras)
         self._extras = extras
+
+    async def _read_messages(self, extras: dict[str, Any]) -> None:
+        """Visitor messages need a ShowPilot login; a failure never stops the rest."""
+        assert self.admin is not None
+        try:
+            box = await self.admin.messages(limit=20)
+        except ShowPilotError as err:
+            if not self._admin_warned:
+                _LOGGER.warning("ShowPilot visitor messages unavailable: %s", err)
+                self._admin_warned = True
+            return
+        self._admin_warned = False
+        rows = box.get("messages") or []
+        extras["unread_messages"] = box.get("unread")
+        extras["latest_message"] = rows[0] if rows else None
+        newest = max((int(r.get("id") or 0) for r in rows), default=0)
+        if self._last_message_id is None:
+            self._last_message_id = newest  # first read: don't replay old messages
+            return
+        for row in sorted(rows, key=lambda r: int(r.get("id") or 0)):
+            if int(row.get("id") or 0) > self._last_message_id:
+                self.hass.bus.async_fire(
+                    EVENT_VISITOR_MESSAGE,
+                    {
+                        "entry_id": self.config_entry.entry_id,
+                        "id": row.get("id"),
+                        "name": row.get("name") or None,
+                        "message": row.get("message"),
+                        "filtered": bool(row.get("filtered")),
+                        "wants_on_wall": bool(row.get("allow_public")),
+                        "created": row.get("created_at"),
+                    },
+                )
+        self._last_message_id = max(self._last_message_id, newest)
 
     def _fire_events(self, data: ShowPilotData) -> None:
         state = data.state
