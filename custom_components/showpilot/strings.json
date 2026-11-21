@@ -1,0 +1,71 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to ShowPilot",
+        "description": "Address of your ShowPilot server, e.g. http://192.168.1.20:3100. The show token is optional: without it you get now playing, queue, viewers and tonight's numbers; with it you can also change the viewer mode, categories and viewer page, clear the queue, and see whether FPP is connected. Copy it from ShowPilot admin → Plugin → Show Token.",
+        "data": { "url": "Server address", "token": "Show token" }
+      },
+      "reconfigure": {
+        "title": "Change ShowPilot connection",
+        "data": { "url": "Server address", "token": "Show token" }
+      },
+      "reauth_confirm": {
+        "title": "ShowPilot show token changed",
+        "description": "ShowPilot at {url} refused the show token. Paste the current one from ShowPilot admin → Plugin → Show Token, or leave it empty to keep only the read-only entities.",
+        "data": { "token": "Show token" }
+      }
+    },
+    "error": {
+      "cannot_connect": "Can't reach the server at that address.",
+      "invalid_auth": "ShowPilot refused that show token.",
+      "not_showpilot": "That address answered, but it isn't a ShowPilot server."
+    },
+    "abort": {
+      "already_configured": "This ShowPilot server is already set up.",
+      "different_server": "That's a different server; add it as a new integration instead.",
+      "reconfigure_successful": "Updated.",
+      "reauth_successful": "Updated."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "now_playing": { "name": "Now playing" },
+      "next_song": { "name": "Next song" },
+      "song_ends": { "name": "Song ends" },
+      "queue": { "name": "Queue" },
+      "viewers": { "name": "Viewers" },
+      "leading_vote": { "name": "Leading vote" },
+      "requests_tonight": { "name": "Requests tonight" },
+      "votes_tonight": { "name": "Votes tonight" },
+      "visitors_tonight": { "name": "Visitors tonight" },
+      "songs_tonight": { "name": "Songs played tonight" },
+      "plugin_last_seen": { "name": "FPP last seen" },
+      "viewer_mode": {
+        "name": "Viewer mode",
+        "state": { "voting": "Voting", "jukebox": "Jukebox", "race": "Race", "listen": "Listen only", "off": "Off" }
+      }
+    },
+    "binary_sensor": {
+      "playing": { "name": "Playing" },
+      "requests_open": { "name": "Viewer control" },
+      "location_check": { "name": "Location check" },
+      "access_code": { "name": "Access code" },
+      "plugin_connected": { "name": "FPP connected" },
+      "interrupt_schedule": { "name": "Interrupt schedule" }
+    },
+    "select": {
+      "viewer_mode": {
+        "name": "Viewer mode",
+        "state": { "voting": "Voting", "jukebox": "Jukebox", "race": "Race", "listen": "Listen only", "off": "Off" }
+      },
+      "viewer_page": { "name": "Viewer page" }
+    },
+    "switch": {
+      "category": { "name": "Category {category}" }
+    },
+    "button": {
+      "clear_queue": { "name": "Clear queue" }
+    }
+  }
+}
