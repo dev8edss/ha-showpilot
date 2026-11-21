@@ -199,3 +199,22 @@ async def test_token_revoked_starts_reauth(hass, server):
     await _poll(hass, entry)
     flows = hass.config_entries.flow.async_progress()
     assert any(f["context"]["source"] == "reauth" for f in flows)
+
+
+async def test_adding_and_removing_token_cleans_up(hass, server):
+    entry = await _setup(hass, None)
+    assert hass.states.get(f"sensor.{P}_viewer_mode") is not None
+    hass.config_entries.async_update_entry(entry, data={**entry.data, CONF_TOKEN: "good-token"})
+    await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+    assert hass.states.get(f"sensor.{P}_viewer_mode") is None
+    assert hass.states.get(f"select.{P}_viewer_mode").state == "off"
+    assert hass.states.get(f"switch.{P}_category_kids") is not None
+
+    hass.config_entries.async_update_entry(entry, data={**entry.data, CONF_TOKEN: None})
+    await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+    assert hass.states.get(f"select.{P}_viewer_mode") is None
+    assert hass.states.get(f"button.{P}_clear_queue") is None
+    assert hass.states.get(f"switch.{P}_category_kids") is None
+    assert hass.states.get(f"sensor.{P}_viewer_mode").state == "off"
